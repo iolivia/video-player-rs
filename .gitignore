@@ -1,1 +1,5 @@
+resources/*
+*.m4v
+*.m4a
 /target
+logs*
