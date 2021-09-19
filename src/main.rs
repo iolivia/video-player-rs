@@ -242,10 +242,6 @@ impl Player {
                             _ => panic!("unrecognized stream index for packet"),
                         }
                     }
-
-                    // TODO need to buffer without this sleep but not sure how
-                    // let duration = Duration::from_millis(100);
-                    // ::std::thread::sleep(duration);
                 }
             }
         });
@@ -255,17 +251,14 @@ impl Player {
             let buffer_ref_clone = Arc::clone(&video_player_buffer);
             let video_buffer_ref_clone = Arc::clone(&video_rendering_buffer);
             let mut decoder = PlayerVideoDecoder::new(video_decoder);
-            // println!("decode_video_thread arcs 1");
 
             move || {
                 loop {
-                    // println!("decode_video_thread arcs 2");
                     let mut buffer = buffer_ref_clone.lock().unwrap();
 
                     // Decode video frames
                     // take from encoded buffers, run through decoder and put into rendering buffer
                     if let Some(packet) = buffer.packets().pop_front() {
-                        // println!("decode_video_thread arcs 3");
                         let frame = decoder.decode_video_packet(packet);
 
                         println!("pushing decoded video frame");
@@ -274,10 +267,6 @@ impl Player {
 
                             b.frames.push_back(frame);
                         }
-
-                        // TODO need to buffer without this sleep but not sure how
-                        // let duration = Duration::from_millis(50);
-                        // ::std::thread::sleep(duration);
                     }
                 }
             }
@@ -304,9 +293,6 @@ impl Player {
 
                             b.frames.push_back(frame);
                         }
-                        // TODO need to buffer without this sleep but not sure how
-                        // let duration = Duration::from_millis(100);
-                        // ::std::thread::sleep(duration);
                     }
                 }
             }
@@ -353,7 +339,6 @@ impl Player {
                 if let Some(frame) = b.frames.front() {
                     if self.should_render_audio_frame(frame, &metadata, playback_start_time) {
                         let frame = b.frames.pop_front().unwrap();
-
                         audio_renderer.render_frame(&frame);
                     }
                 }
@@ -374,10 +359,6 @@ impl Player {
             let duration = Duration::from_millis(1);
             ::std::thread::sleep(duration);
         }
-
-        // buffer_thread.join().unwrap();
-        // decode_video_thread.join().unwrap();
-        // decode_audio_thread.join().unwrap();
     }
 
     pub fn should_render_video_frame(
