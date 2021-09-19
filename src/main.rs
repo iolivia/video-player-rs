@@ -193,39 +193,139 @@ impl PlayerDecoder {
     }
 }
 
-struct Player {
-    playback_start_time: Option<Instant>,
-    video_time_base: f64,
-    audio_time_base: f64,
-}
+struct Player {}
 
 impl Player {
-    pub fn new(asset: &PlaybackAsset) -> Self {
-        Player {
-            playback_start_time: None,
-            video_time_base: asset.video_time_base(),
-            audio_time_base: asset.audio_time_base(),
+    pub fn new() -> Self {
+        Player {}
+    }
+
+    pub fn play(&mut self, asset: &mut PlaybackAsset) {
+        let mut player_buffer = PlayerBuffer::new(&asset);
+
+        let mut video_rendering_buffer = VideoRenderingBuffer {
+            frames: VecDeque::new(),
+        };
+        let mut audio_rendering_buffer = AudioRenderingBuffer {
+            frames: VecDeque::new(),
+        };
+
+        let mut player_decoder = PlayerDecoder::new(&asset);
+
+        // Buffer packets
+        for _ in 0..500 {
+            let packet = asset.packets().next();
+            if let Some((stream, packet)) = packet {
+                player_buffer.push_packet(stream.index(), packet);
+            }
+        }
+
+        // Decode video frames
+        for packet in player_buffer.video_packets().drain(..) {
+            let frame = player_decoder.decode_video_packet(packet);
+            video_rendering_buffer.frames.push_back(frame);
+        }
+
+        // Decode audio frames
+        for packet in player_buffer.audio_packets().drain(..) {
+            let frame = player_decoder.decode_audio_packet(packet);
+            audio_rendering_buffer.frames.push_back(frame);
+        }
+
+        let sdl_context = sdl2::init().unwrap();
+        let video_subsystem = sdl_context.video().unwrap();
+        let audio_subsystem = sdl_context.audio().unwrap();
+
+        let window = video_subsystem
+            .window("rust-sdl2 demo: Video", asset.width(), asset.height())
+            .position_centered()
+            .opengl()
+            .build()
+            .map_err(|e| e.to_string())
+            .unwrap();
+
+        let mut canvas = window
+            .into_canvas()
+            .build()
+            .map_err(|e| e.to_string())
+            .unwrap();
+
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+        canvas.clear();
+        canvas.present();
+        let mut event_pump = sdl_context.event_pump().unwrap();
+        event_pump.pump_events(); // warm up the event pump
+
+        let mut audio_renderer = AudioRenderer::new(&audio_subsystem);
+        audio_renderer.initialize();
+
+        let texture_creator = canvas.texture_creator();
+        let mut video_renderer = VideoRenderer::new(&texture_creator, &asset);
+        video_renderer.initialize();
+
+        let playback_start_time = Instant::now();
+
+        'running: loop {
+            if let Some(frame) = video_rendering_buffer.frames.front() {
+                if self.should_render_video_frame(frame, asset, playback_start_time) {
+                    let frame = video_rendering_buffer.frames.pop_front().unwrap();
+                    video_renderer.render_frame(&frame);
+                    canvas.copy(video_renderer.texture(), None, None).unwrap();
+                    canvas.present();
+                }
+            }
+
+            if let Some(frame) = audio_rendering_buffer.frames.front() {
+                if self.should_render_audio_frame(frame, asset, playback_start_time) {
+                    let frame = audio_rendering_buffer.frames.pop_front().unwrap();
+                    audio_renderer.render_frame(&frame);
+                }
+            }
+
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit { .. }
+                    | Event::KeyDown {
+                        keycode: Some(Keycode::Escape),
+                        ..
+                    } => break 'running,
+                    _ => {}
+                }
+            }
+
+            let seconds_duration = Duration::from_millis(1);
+            ::std::thread::sleep(seconds_duration);
         }
     }
 
-    pub fn play(&mut self) {
-        self.playback_start_time = Some(Instant::now());
+    pub fn should_render_video_frame(
+        &self,
+        frame: &Video,
+        asset: &PlaybackAsset,
+        playback_start_time: Instant,
+    ) -> bool {
+        self.should_render_frame(frame, asset.video_time_base(), playback_start_time)
     }
 
-    pub fn should_render_video_frame(&self, frame: &Video) -> bool {
-        self.should_render_frame(frame, self.video_time_base)
+    pub fn should_render_audio_frame(
+        &self,
+        frame: &Audio,
+        asset: &PlaybackAsset,
+        playback_start_time: Instant,
+    ) -> bool {
+        self.should_render_frame(frame, asset.audio_time_base(), playback_start_time)
     }
 
-    pub fn should_render_audio_frame(&self, frame: &Audio) -> bool {
-        self.should_render_frame(frame, self.audio_time_base)
-    }
-
-    fn should_render_frame(&self, frame: &Frame, time_base: f64) -> bool {
+    fn should_render_frame(
+        &self,
+        frame: &Frame,
+        time_base: f64,
+        playback_start_time: Instant,
+    ) -> bool {
         if let Some(pts) = frame.pts() {
             let pts = pts as f64 * time_base * 1000_f64;
             let show_time = Duration::from_millis(pts as u64);
-            let playback_time_elapsed =
-                Instant::now().duration_since(self.playback_start_time.unwrap());
+            let playback_time_elapsed = Instant::now().duration_since(playback_start_time);
 
             playback_time_elapsed > show_time
         } else {
@@ -314,108 +414,6 @@ fn main() {
     let video_path = "resources/tears-of-steel_teaser.mp4";
     let mut asset = PlaybackAsset::new(video_path);
 
-    let mut player_buffer = PlayerBuffer::new(&asset);
-
-    // Buffer packets
-    for _ in 0..500 {
-        let packet = asset.packets().next();
-        if let Some((stream, packet)) = packet {
-            player_buffer.push_packet(stream.index(), packet);
-        }
-    }
-
-    let mut video_rendering_buffer = VideoRenderingBuffer {
-        frames: VecDeque::new(),
-    };
-    let mut audio_rendering_buffer = AudioRenderingBuffer {
-        frames: VecDeque::new(),
-    };
-
-    let mut player_decoder = PlayerDecoder::new(&asset);
-
-    // Decode video frames
-    for packet in player_buffer.video_packets().drain(..) {
-        let frame = player_decoder.decode_video_packet(packet);
-        video_rendering_buffer.frames.push_back(frame);
-    }
-
-    // Decode audio frames
-    for packet in player_buffer.audio_packets().drain(..) {
-        let frame = player_decoder.decode_audio_packet(packet);
-        audio_rendering_buffer.frames.push_back(frame);
-    }
-
-    let sdl_context = sdl2::init().unwrap();
-    let video_subsystem = sdl_context.video().unwrap();
-    let audio_subsystem = sdl_context.audio().unwrap();
-
-    let window = video_subsystem
-        .window("rust-sdl2 demo: Video", asset.width(), asset.height())
-        .position_centered()
-        .opengl()
-        .build()
-        .map_err(|e| e.to_string())
-        .unwrap();
-
-    let mut canvas = window
-        .into_canvas()
-        .build()
-        .map_err(|e| e.to_string())
-        .unwrap();
-
-    canvas.set_draw_color(Color::RGB(0, 0, 0));
-    canvas.clear();
-    canvas.present();
-    let mut event_pump = sdl_context.event_pump().unwrap();
-    event_pump.pump_events(); // warm up the event pump
-
-    let mut audio_renderer = AudioRenderer::new(&audio_subsystem);
-    audio_renderer.initialize();
-
-    let texture_creator = canvas.texture_creator();
-    let mut video_renderer = VideoRenderer::new(&texture_creator, &asset);
-    video_renderer.initialize();
-
-    let mut player = Player::new(&asset);
-    player.play();
-
-    println!("play");
-
-    'running: loop {
-        println!("video");
-        if let Some(frame) = video_rendering_buffer.frames.front() {
-            println!("video 1");
-            if player.should_render_video_frame(frame) {
-                println!("video 2");
-                let frame = video_rendering_buffer.frames.pop_front().unwrap();
-                println!("video 3");
-                video_renderer.render_frame(&frame);
-                println!("video 4");
-                canvas.copy(video_renderer.texture(), None, None).unwrap();
-                canvas.present();
-            }
-        }
-
-        println!("audio");
-        if let Some(frame) = audio_rendering_buffer.frames.front() {
-            if player.should_render_audio_frame(frame) {
-                let frame = audio_rendering_buffer.frames.pop_front().unwrap();
-                audio_renderer.render_frame(&frame);
-            }
-        }
-
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => break 'running,
-                _ => {}
-            }
-        }
-
-        let seconds_duration = Duration::from_millis(1);
-        ::std::thread::sleep(seconds_duration);
-    }
+    let mut player = Player::new();
+    player.play(&mut asset);
 }
