@@ -242,6 +242,10 @@ impl Player {
                             _ => panic!("unrecognized stream index for packet"),
                         }
                     }
+
+                    // TODO need to buffer without this sleep but not sure how
+                    // let duration = Duration::from_millis(100);
+                    // ::std::thread::sleep(duration);
                 }
             }
         });
@@ -251,25 +255,29 @@ impl Player {
             let buffer_ref_clone = Arc::clone(&video_player_buffer);
             let video_buffer_ref_clone = Arc::clone(&video_rendering_buffer);
             let mut decoder = PlayerVideoDecoder::new(video_decoder);
-            println!("decode_video_thread arcs 1");
+            // println!("decode_video_thread arcs 1");
 
             move || {
                 loop {
-                    println!("decode_video_thread arcs 2");
+                    // println!("decode_video_thread arcs 2");
                     let mut buffer = buffer_ref_clone.lock().unwrap();
 
                     // Decode video frames
                     // take from encoded buffers, run through decoder and put into rendering buffer
-                    for packet in buffer.packets().drain(..) {
-                        println!("decode_video_thread arcs 3");
+                    if let Some(packet) = buffer.packets().pop_front() {
+                        // println!("decode_video_thread arcs 3");
                         let frame = decoder.decode_video_packet(packet);
 
                         println!("pushing decoded video frame");
-                        video_buffer_ref_clone
-                            .lock()
-                            .unwrap()
-                            .frames
-                            .push_back(frame);
+                        {
+                            let mut b = video_buffer_ref_clone.lock().unwrap();
+
+                            b.frames.push_back(frame);
+                        }
+
+                        // TODO need to buffer without this sleep but not sure how
+                        // let duration = Duration::from_millis(50);
+                        // ::std::thread::sleep(duration);
                     }
                 }
             }
@@ -280,24 +288,25 @@ impl Player {
             let buffer_ref_clone = Arc::clone(&audio_player_buffer);
             let audio_buffer_ref_clone = Arc::clone(&audio_rendering_buffer);
             let mut decoder = PlayerAudioDecoder::new(audio_decoder);
-            println!("decode_audio_thread arcs 1");
+            // println!("decode_audio_thread arcs 1");
 
             move || {
                 loop {
-                    println!("decode_audio_thread arcs 2");
                     let mut buffer = buffer_ref_clone.lock().unwrap();
 
                     // Decode audio frames
                     // take from encoded buffers, run through decoder and put into rendering buffer
-                    for packet in buffer.packets().drain(..) {
-                        println!("decode_audio_thread arcs 3");
+                    if let Some(packet) = buffer.packets().pop_front() {
                         let frame = decoder.decode_audio_packet(packet);
                         println!("pushing decoded audio frame");
-                        audio_buffer_ref_clone
-                            .lock()
-                            .unwrap()
-                            .frames
-                            .push_back(frame);
+                        {
+                            let mut b = audio_buffer_ref_clone.lock().unwrap();
+
+                            b.frames.push_back(frame);
+                        }
+                        // TODO need to buffer without this sleep but not sure how
+                        // let duration = Duration::from_millis(100);
+                        // ::std::thread::sleep(duration);
                     }
                 }
             }
@@ -325,33 +334,30 @@ impl Player {
         let playback_start_time = Instant::now();
 
         'running: loop {
-            // // maybe render video frame
-            // if let Some(frame) = video_rendering_buffer.lock().unwrap().frames.front() {
-            //     if self.should_render_video_frame(frame, &metadata, playback_start_time) {
-            //         let frame = video_rendering_buffer
-            //             .lock()
-            //             .unwrap()
-            //             .frames
-            //             .pop_front()
-            //             .unwrap();
-            //         video_renderer.render_frame(&frame);
-            //         canvas.copy(video_renderer.texture(), None, None).unwrap();
-            //         canvas.present();
-            //     }
-            // }
+            // maybe render video frame
+            {
+                let mut b = video_rendering_buffer.lock().unwrap();
+                if let Some(frame) = b.frames.front() {
+                    if self.should_render_video_frame(frame, &metadata, playback_start_time) {
+                        let frame = b.frames.pop_front().unwrap();
+                        video_renderer.render_frame(&frame);
+                        canvas.copy(video_renderer.texture(), None, None).unwrap();
+                        canvas.present();
+                    }
+                }
+            }
 
-            // // maybe render audio frame
-            // if let Some(frame) = audio_rendering_buffer.lock().unwrap().frames.front() {
-            //     if self.should_render_audio_frame(frame, &metadata, playback_start_time) {
-            //         let frame = audio_rendering_buffer
-            //             .lock()
-            //             .unwrap()
-            //             .frames
-            //             .pop_front()
-            //             .unwrap();
-            //         audio_renderer.render_frame(&frame);
-            //     }
-            // }
+            // maybe render audio frame
+            {
+                let mut b = audio_rendering_buffer.lock().unwrap();
+                if let Some(frame) = b.frames.front() {
+                    if self.should_render_audio_frame(frame, &metadata, playback_start_time) {
+                        let frame = b.frames.pop_front().unwrap();
+
+                        audio_renderer.render_frame(&frame);
+                    }
+                }
+            }
 
             // handle events
             for event in event_pump.poll_iter() {
