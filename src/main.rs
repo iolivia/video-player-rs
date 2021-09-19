@@ -22,9 +22,9 @@ use sdl2::{
     event::Event,
     keyboard::Keycode,
     pixels::{Color, PixelFormatEnum},
-    render::{Texture, TextureCreator},
-    video::WindowContext,
-    AudioSubsystem,
+    render::{Canvas, Texture, TextureCreator},
+    video::{Window, WindowContext},
+    AudioSubsystem, EventPump, Sdl, VideoSubsystem,
 };
 
 struct AudioRenderer {
@@ -106,27 +106,23 @@ struct AudioRenderingBuffer {
 struct PlayerBuffer {
     video_buffer: VecDeque<Packet>,
     audio_buffer: VecDeque<Packet>,
-    video_stream_index: usize,
-    audio_stream_index: usize,
 }
 
 // Encoded buffers
 impl PlayerBuffer {
-    pub fn new(asset: &PlaybackAsset) -> Self {
+    pub fn new() -> Self {
         PlayerBuffer {
             video_buffer: VecDeque::new(),
             audio_buffer: VecDeque::new(),
-            video_stream_index: asset.video_stream_index(),
-            audio_stream_index: asset.audio_stream_index(),
         }
     }
 
-    pub fn push_packet(&mut self, stream_index: usize, packet: Packet) {
+    pub fn push_packet(&mut self, stream_index: usize, packet: Packet, asset: &PlaybackAsset) {
         match stream_index {
-            idx if idx == self.video_stream_index => {
+            idx if idx == asset.video_stream_index() => {
                 self.push_video_packet(packet);
             }
-            idx if idx == self.audio_stream_index => {
+            idx if idx == asset.audio_stream_index() => {
                 self.push_audio_packet(packet);
             }
             _ => panic!("unrecognized stream index for packet"),
@@ -201,8 +197,10 @@ impl Player {
     }
 
     pub fn play(&mut self, asset: &mut PlaybackAsset) {
-        let mut player_buffer = PlayerBuffer::new(&asset);
+        // Encoded buffers
+        let mut player_buffer = PlayerBuffer::new();
 
+        // Rendering buffers
         let mut video_rendering_buffer = VideoRenderingBuffer {
             frames: VecDeque::new(),
         };
@@ -210,62 +208,54 @@ impl Player {
             frames: VecDeque::new(),
         };
 
+        // Decoder
         let mut player_decoder = PlayerDecoder::new(&asset);
 
         // Buffer packets
         for _ in 0..500 {
             let packet = asset.packets().next();
             if let Some((stream, packet)) = packet {
-                player_buffer.push_packet(stream.index(), packet);
+                player_buffer.push_packet(stream.index(), packet, &asset);
             }
         }
 
         // Decode video frames
+        // take from encoded buffers, run through decoder and put into rendering buffer
         for packet in player_buffer.video_packets().drain(..) {
             let frame = player_decoder.decode_video_packet(packet);
             video_rendering_buffer.frames.push_back(frame);
         }
 
         // Decode audio frames
+        // take from encoded buffers, run through decoder and put into rendering buffer
         for packet in player_buffer.audio_packets().drain(..) {
             let frame = player_decoder.decode_audio_packet(packet);
             audio_rendering_buffer.frames.push_back(frame);
         }
 
+        // Initialize SDL things
         let sdl_context = sdl2::init().unwrap();
         let video_subsystem = sdl_context.video().unwrap();
         let audio_subsystem = sdl_context.audio().unwrap();
 
-        let window = video_subsystem
-            .window("rust-sdl2 demo: Video", asset.width(), asset.height())
-            .position_centered()
-            .opengl()
-            .build()
-            .map_err(|e| e.to_string())
-            .unwrap();
+        let window = self.create_window(&video_subsystem, &asset);
+        let mut canvas = self.create_canvas(window);
+        let mut event_pump = self.create_event_pump(&sdl_context);
 
-        let mut canvas = window
-            .into_canvas()
-            .build()
-            .map_err(|e| e.to_string())
-            .unwrap();
-
-        canvas.set_draw_color(Color::RGB(0, 0, 0));
-        canvas.clear();
-        canvas.present();
-        let mut event_pump = sdl_context.event_pump().unwrap();
-        event_pump.pump_events(); // warm up the event pump
-
+        // Audio renderer
         let mut audio_renderer = AudioRenderer::new(&audio_subsystem);
         audio_renderer.initialize();
 
+        // Video renderer
         let texture_creator = canvas.texture_creator();
         let mut video_renderer = VideoRenderer::new(&texture_creator, &asset);
         video_renderer.initialize();
 
+        // Playback time
         let playback_start_time = Instant::now();
 
         'running: loop {
+            // maybe render video frame
             if let Some(frame) = video_rendering_buffer.frames.front() {
                 if self.should_render_video_frame(frame, asset, playback_start_time) {
                     let frame = video_rendering_buffer.frames.pop_front().unwrap();
@@ -275,6 +265,7 @@ impl Player {
                 }
             }
 
+            // maybe render audio frame
             if let Some(frame) = audio_rendering_buffer.frames.front() {
                 if self.should_render_audio_frame(frame, asset, playback_start_time) {
                     let frame = audio_rendering_buffer.frames.pop_front().unwrap();
@@ -282,6 +273,7 @@ impl Player {
                 }
             }
 
+            // handle events
             for event in event_pump.poll_iter() {
                 match event {
                     Event::Quit { .. }
@@ -293,8 +285,8 @@ impl Player {
                 }
             }
 
-            let seconds_duration = Duration::from_millis(1);
-            ::std::thread::sleep(seconds_duration);
+            let duration = Duration::from_millis(1);
+            ::std::thread::sleep(duration);
         }
     }
 
@@ -331,6 +323,41 @@ impl Player {
         } else {
             false
         }
+    }
+
+    fn create_window(&self, video_subsystem: &VideoSubsystem, asset: &PlaybackAsset) -> Window {
+        let window = video_subsystem
+            .window("rust-sdl2 demo: Video", asset.width(), asset.height())
+            .position_centered()
+            .opengl()
+            .build()
+            .map_err(|e| e.to_string())
+            .unwrap();
+
+        window
+    }
+
+    fn create_canvas(&self, window: Window) -> Canvas<Window> {
+        let mut canvas = window
+            .into_canvas()
+            .build()
+            .map_err(|e| e.to_string())
+            .unwrap();
+
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+        canvas.clear();
+        canvas.present();
+
+        canvas
+    }
+
+    fn create_event_pump(&self, sdl_context: &Sdl) -> EventPump {
+        let mut event_pump = sdl_context.event_pump().unwrap();
+
+        // warm up the event pump
+        event_pump.pump_events();
+
+        event_pump
     }
 }
 
