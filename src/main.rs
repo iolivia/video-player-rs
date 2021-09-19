@@ -104,8 +104,20 @@ struct VideoRenderingBuffer {
     frames: VecDeque<frame::Video>,
 }
 
+impl VideoRenderingBuffer {
+    pub fn is_full(&self) -> bool {
+        self.frames.len() >= 10
+    }
+}
+
 struct AudioRenderingBuffer {
     frames: VecDeque<frame::Audio>,
+}
+
+impl AudioRenderingBuffer {
+    pub fn is_full(&self) -> bool {
+        self.frames.len() >= 10
+    }
 }
 
 struct PlayerBuffer {
@@ -232,7 +244,7 @@ impl Player {
         let mut audio_decoder = asset.audio_decoder();
 
         // Buffer packets
-        let buffer_thread = thread::spawn(|| {
+        let buffer_thread = thread::spawn({
             let buffer_ref_clone = Arc::clone(&player_buffer);
 
             move || {
@@ -248,7 +260,7 @@ impl Player {
             }
         });
 
-        let decode_video_thread = thread::spawn(|| {
+        let decode_video_thread = thread::spawn({
             let buffer_ref_clone = Arc::clone(&player_buffer);
             let mut decoder = PlayerVideoDecoder::new(video_decoder);
 
@@ -258,6 +270,8 @@ impl Player {
                 // take from encoded buffers, run through decoder and put into rendering buffer
                 for packet in buffer.video_packets().drain(..) {
                     let frame = decoder.decode_video_packet(packet);
+
+                    println!("pushing decoded video frame");
                     video_rendering_buffer
                         .lock()
                         .unwrap()
@@ -267,7 +281,7 @@ impl Player {
             }
         });
 
-        let decode_audio_thread = thread::spawn(|| {
+        let decode_audio_thread = thread::spawn({
             let buffer_ref_clone = Arc::clone(&player_buffer);
             let mut decoder = PlayerAudioDecoder::new(audio_decoder);
 
@@ -278,6 +292,7 @@ impl Player {
                 // take from encoded buffers, run through decoder and put into rendering buffer
                 for packet in buffer.audio_packets().drain(..) {
                     let frame = decoder.decode_audio_packet(packet);
+                    println!("pushing decoded audio frame");
                     audio_rendering_buffer
                         .lock()
                         .unwrap()
@@ -309,33 +324,33 @@ impl Player {
         let playback_start_time = Instant::now();
 
         'running: loop {
-            // maybe render video frame
-            if let Some(frame) = video_rendering_buffer.lock().unwrap().frames.front() {
-                if self.should_render_video_frame(frame, &metadata, playback_start_time) {
-                    let frame = video_rendering_buffer
-                        .lock()
-                        .unwrap()
-                        .frames
-                        .pop_front()
-                        .unwrap();
-                    video_renderer.render_frame(&frame);
-                    canvas.copy(video_renderer.texture(), None, None).unwrap();
-                    canvas.present();
-                }
-            }
+            // // maybe render video frame
+            // if let Some(frame) = video_rendering_buffer.lock().unwrap().frames.front() {
+            //     if self.should_render_video_frame(frame, &metadata, playback_start_time) {
+            //         let frame = video_rendering_buffer
+            //             .lock()
+            //             .unwrap()
+            //             .frames
+            //             .pop_front()
+            //             .unwrap();
+            //         video_renderer.render_frame(&frame);
+            //         canvas.copy(video_renderer.texture(), None, None).unwrap();
+            //         canvas.present();
+            //     }
+            // }
 
             // maybe render audio frame
-            if let Some(frame) = audio_rendering_buffer.lock().unwrap().frames.front() {
-                if self.should_render_audio_frame(frame, &metadata, playback_start_time) {
-                    let frame = audio_rendering_buffer
-                        .lock()
-                        .unwrap()
-                        .frames
-                        .pop_front()
-                        .unwrap();
-                    audio_renderer.render_frame(&frame);
-                }
-            }
+            // if let Some(frame) = audio_rendering_buffer.lock().unwrap().frames.front() {
+            //     if self.should_render_audio_frame(frame, &metadata, playback_start_time) {
+            //         let frame = audio_rendering_buffer
+            //             .lock()
+            //             .unwrap()
+            //             .frames
+            //             .pop_front()
+            //             .unwrap();
+            //         audio_renderer.render_frame(&frame);
+            //     }
+            // }
 
             // handle events
             for event in event_pump.poll_iter() {
@@ -353,9 +368,9 @@ impl Player {
             ::std::thread::sleep(duration);
         }
 
-        buffer_thread.join().unwrap();
-        decode_video_thread.join().unwrap();
-        decode_audio_thread.join().unwrap();
+        // buffer_thread.join().unwrap();
+        // decode_video_thread.join().unwrap();
+        // decode_audio_thread.join().unwrap();
     }
 
     pub fn should_render_video_frame(
