@@ -121,50 +121,23 @@ impl AudioRenderingBuffer {
 }
 
 struct PlayerBuffer {
-    video_buffer: VecDeque<Packet>,
-    audio_buffer: VecDeque<Packet>,
+    buffer: VecDeque<Packet>,
 }
 
 // Encoded buffers
 impl PlayerBuffer {
     pub fn new() -> Self {
         PlayerBuffer {
-            video_buffer: VecDeque::new(),
-            audio_buffer: VecDeque::new(),
+            buffer: VecDeque::new(),
         }
     }
 
-    pub fn push_packet(
-        &mut self,
-        stream_index: usize,
-        packet: Packet,
-        asset: &PlaybackAssetMetadata,
-    ) {
-        match stream_index {
-            idx if idx == asset.video_stream_index() => {
-                self.push_video_packet(packet);
-            }
-            idx if idx == asset.audio_stream_index() => {
-                self.push_audio_packet(packet);
-            }
-            _ => panic!("unrecognized stream index for packet"),
-        }
+    pub fn push_packet(&mut self, packet: Packet) {
+        self.buffer.push_back(packet)
     }
 
-    pub fn video_packets(&mut self) -> &mut VecDeque<Packet> {
-        &mut self.video_buffer
-    }
-
-    pub fn audio_packets(&mut self) -> &mut VecDeque<Packet> {
-        &mut self.audio_buffer
-    }
-
-    fn push_video_packet(&mut self, packet: Packet) {
-        self.video_buffer.push_back(packet);
-    }
-
-    fn push_audio_packet(&mut self, packet: Packet) {
-        self.audio_buffer.push_back(packet);
+    pub fn packets(&mut self) -> &mut VecDeque<Packet> {
+        &mut self.buffer
     }
 }
 
@@ -229,7 +202,8 @@ impl Player {
         let metadata = asset.metadata.clone();
 
         // Encoded buffers
-        let mut player_buffer = Arc::new(Mutex::new(PlayerBuffer::new()));
+        let mut video_player_buffer = Arc::new(Mutex::new(PlayerBuffer::new()));
+        let mut audio_player_buffer = Arc::new(Mutex::new(PlayerBuffer::new()));
 
         // Rendering buffers
         let mut video_rendering_buffer = Arc::new(Mutex::new(VideoRenderingBuffer {
@@ -245,59 +219,86 @@ impl Player {
 
         // Buffer packets
         let buffer_thread = thread::spawn({
-            let buffer_ref_clone = Arc::clone(&player_buffer);
+            println!("starting buffer thread");
+            let video_buffer_ref_clone = Arc::clone(&video_player_buffer);
+            let audio_buffer_ref_clone = Arc::clone(&audio_player_buffer);
 
             move || {
-                let mut buffer = buffer_ref_clone.lock().unwrap();
-
                 // Buffer packets
-                for _ in 0..500 {
+                loop {
                     let packet = asset.packets().next();
                     if let Some((stream, packet)) = packet {
-                        buffer.push_packet(stream.index(), packet, &metadata);
+                        match stream.index() {
+                            idx if idx == asset.metadata.video_stream_index() => {
+                                println!("buffering video packet");
+                                let mut buffer = video_buffer_ref_clone.lock().unwrap();
+                                buffer.push_packet(packet);
+                            }
+                            idx if idx == asset.metadata.audio_stream_index() => {
+                                println!("buffering audio packet");
+                                let mut buffer = audio_buffer_ref_clone.lock().unwrap();
+                                buffer.push_packet(packet);
+                            }
+                            _ => panic!("unrecognized stream index for packet"),
+                        }
                     }
                 }
             }
         });
 
         let decode_video_thread = thread::spawn({
-            let buffer_ref_clone = Arc::clone(&player_buffer);
+            println!("starting decode_video_thread");
+            let buffer_ref_clone = Arc::clone(&video_player_buffer);
+            let video_buffer_ref_clone = Arc::clone(&video_rendering_buffer);
             let mut decoder = PlayerVideoDecoder::new(video_decoder);
+            println!("decode_video_thread arcs 1");
 
             move || {
-                let mut buffer = buffer_ref_clone.lock().unwrap();
-                // Decode video frames
-                // take from encoded buffers, run through decoder and put into rendering buffer
-                for packet in buffer.video_packets().drain(..) {
-                    let frame = decoder.decode_video_packet(packet);
+                loop {
+                    println!("decode_video_thread arcs 2");
+                    let mut buffer = buffer_ref_clone.lock().unwrap();
 
-                    println!("pushing decoded video frame");
-                    video_rendering_buffer
-                        .lock()
-                        .unwrap()
-                        .frames
-                        .push_back(frame);
+                    // Decode video frames
+                    // take from encoded buffers, run through decoder and put into rendering buffer
+                    for packet in buffer.packets().drain(..) {
+                        println!("decode_video_thread arcs 3");
+                        let frame = decoder.decode_video_packet(packet);
+
+                        println!("pushing decoded video frame");
+                        video_buffer_ref_clone
+                            .lock()
+                            .unwrap()
+                            .frames
+                            .push_back(frame);
+                    }
                 }
             }
         });
 
         let decode_audio_thread = thread::spawn({
-            let buffer_ref_clone = Arc::clone(&player_buffer);
+            println!("starting decode_audio_thread");
+            let buffer_ref_clone = Arc::clone(&audio_player_buffer);
+            let audio_buffer_ref_clone = Arc::clone(&audio_rendering_buffer);
             let mut decoder = PlayerAudioDecoder::new(audio_decoder);
+            println!("decode_audio_thread arcs 1");
 
             move || {
-                let mut buffer = buffer_ref_clone.lock().unwrap();
+                loop {
+                    println!("decode_audio_thread arcs 2");
+                    let mut buffer = buffer_ref_clone.lock().unwrap();
 
-                // Decode audio frames
-                // take from encoded buffers, run through decoder and put into rendering buffer
-                for packet in buffer.audio_packets().drain(..) {
-                    let frame = decoder.decode_audio_packet(packet);
-                    println!("pushing decoded audio frame");
-                    audio_rendering_buffer
-                        .lock()
-                        .unwrap()
-                        .frames
-                        .push_back(frame);
+                    // Decode audio frames
+                    // take from encoded buffers, run through decoder and put into rendering buffer
+                    for packet in buffer.packets().drain(..) {
+                        println!("decode_audio_thread arcs 3");
+                        let frame = decoder.decode_audio_packet(packet);
+                        println!("pushing decoded audio frame");
+                        audio_buffer_ref_clone
+                            .lock()
+                            .unwrap()
+                            .frames
+                            .push_back(frame);
+                    }
                 }
             }
         });
@@ -339,7 +340,7 @@ impl Player {
             //     }
             // }
 
-            // maybe render audio frame
+            // // maybe render audio frame
             // if let Some(frame) = audio_rendering_buffer.lock().unwrap().frames.front() {
             //     if self.should_render_audio_frame(frame, &metadata, playback_start_time) {
             //         let frame = audio_rendering_buffer
