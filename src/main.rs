@@ -108,6 +108,10 @@ impl VideoRenderingBuffer {
     pub fn is_full(&self) -> bool {
         self.frames.len() >= 10
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.len() == 0
+    }
 }
 
 struct AudioRenderingBuffer {
@@ -118,10 +122,15 @@ impl AudioRenderingBuffer {
     pub fn is_full(&self) -> bool {
         self.frames.len() >= 10
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.len() == 0
+    }
 }
 
 struct PlayerBuffer {
     buffer: VecDeque<Packet>,
+    ended: bool,
 }
 
 // Encoded buffers
@@ -129,6 +138,7 @@ impl PlayerBuffer {
     pub fn new() -> Self {
         PlayerBuffer {
             buffer: VecDeque::new(),
+            ended: false,
         }
     }
 
@@ -138,6 +148,14 @@ impl PlayerBuffer {
 
     pub fn packets(&mut self) -> &mut VecDeque<Packet> {
         &mut self.buffer
+    }
+
+    pub fn endOfFile(&mut self) {
+        self.ended = true;
+    }
+
+    pub fn has_ended(&self) -> bool {
+        self.buffer.is_empty() && self.ended
     }
 }
 
@@ -240,6 +258,16 @@ impl Player {
                                 buffer.push_packet(packet);
                             }
                             _ => panic!("unrecognized stream index for packet"),
+                        }
+                    } else {
+                        {
+                            let mut buffer = video_buffer_ref_clone.lock().unwrap();
+                            buffer.endOfFile();
+                        }
+
+                        {
+                            let mut buffer = audio_buffer_ref_clone.lock().unwrap();
+                            buffer.endOfFile();
                         }
                     }
                 }
@@ -353,6 +381,20 @@ impl Player {
                         ..
                     } => break 'running,
                     _ => {}
+                }
+            }
+
+            // close if we reached EOF
+            {
+                let vrb = video_rendering_buffer.lock().unwrap();
+                let arb = audio_rendering_buffer.lock().unwrap();
+
+                if vrb.is_empty() && arb.is_empty() {
+                    let vb = video_player_buffer.lock().unwrap().has_ended();
+                    let ab = audio_player_buffer.lock().unwrap().has_ended();
+
+                    // end playback
+                    return;
                 }
             }
 
