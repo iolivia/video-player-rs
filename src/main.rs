@@ -108,6 +108,10 @@ impl VideoRenderingBuffer {
     pub fn is_full(&self) -> bool {
         self.frames.len() >= 10
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.len() == 0
+    }
 }
 
 struct AudioRenderingBuffer {
@@ -118,10 +122,15 @@ impl AudioRenderingBuffer {
     pub fn is_full(&self) -> bool {
         self.frames.len() >= 10
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.len() == 0
+    }
 }
 
 struct PlayerBuffer {
     buffer: VecDeque<Packet>,
+    ended: bool,
 }
 
 // Encoded buffers
@@ -129,6 +138,7 @@ impl PlayerBuffer {
     pub fn new() -> Self {
         PlayerBuffer {
             buffer: VecDeque::new(),
+            ended: false,
         }
     }
 
@@ -138,6 +148,14 @@ impl PlayerBuffer {
 
     pub fn packets(&mut self) -> &mut VecDeque<Packet> {
         &mut self.buffer
+    }
+
+    pub fn endOfFile(&mut self) {
+        self.ended = true;
+    }
+
+    pub fn has_ended(&self) -> bool {
+        self.buffer.is_empty() && self.ended
     }
 }
 
@@ -240,6 +258,16 @@ impl Player {
                                 buffer.push_packet(packet);
                             }
                             _ => panic!("unrecognized stream index for packet"),
+                        }
+                    } else {
+                        {
+                            let mut buffer = video_buffer_ref_clone.lock().unwrap();
+                            buffer.endOfFile();
+                        }
+
+                        {
+                            let mut buffer = audio_buffer_ref_clone.lock().unwrap();
+                            buffer.endOfFile();
                         }
                     }
                 }
@@ -356,6 +384,20 @@ impl Player {
                 }
             }
 
+            // close if we reached EOF
+            {
+                let vrb = video_rendering_buffer.lock().unwrap();
+                let arb = audio_rendering_buffer.lock().unwrap();
+
+                if vrb.is_empty() && arb.is_empty() {
+                    let vb = video_player_buffer.lock().unwrap().has_ended();
+                    let ab = audio_player_buffer.lock().unwrap().has_ended();
+
+                    // end playback
+                    return;
+                }
+            }
+
             let duration = Duration::from_millis(1);
             ::std::thread::sleep(duration);
         }
@@ -401,9 +443,25 @@ impl Player {
         video_subsystem: &VideoSubsystem,
         asset: &PlaybackAssetMetadata,
     ) -> Window {
+        let display_bounds = video_subsystem.display_bounds(0).unwrap();
+
+        let (window_width, window_height) =
+            if display_bounds.width() > asset.width() && display_bounds.height() > asset.height() {
+                // the original video size fits on the screen
+                (asset.width(), asset.height())
+            } else {
+                // scale to the size of the screen
+                let ratio = display_bounds.width() as f32 / asset.width() as f32;
+                (
+                    display_bounds.width(),
+                    (display_bounds.height() as f32 * ratio) as u32,
+                )
+            };
+
         let window = video_subsystem
-            .window("rust-sdl2 demo: Video", asset.width(), asset.height())
+            .window("Rust Video Player", window_width, window_height)
             .position_centered()
+            .allow_highdpi()
             .opengl()
             .build()
             .map_err(|e| e.to_string())
