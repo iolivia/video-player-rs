@@ -443,9 +443,25 @@ impl Player {
         video_subsystem: &VideoSubsystem,
         asset: &PlaybackAssetMetadata,
     ) -> Window {
+        let display_bounds = video_subsystem.display_bounds(0).unwrap();
+
+        let (window_width, window_height) =
+            if display_bounds.width() > asset.width() && display_bounds.height() > asset.height() {
+                // the original video size fits on the screen
+                (asset.width(), asset.height())
+            } else {
+                // scale to the size of the screen
+                let ratio = display_bounds.width() as f32 / asset.width() as f32;
+                (
+                    display_bounds.width(),
+                    (display_bounds.height() as f32 * ratio) as u32,
+                )
+            };
+
         let window = video_subsystem
-            .window("rust-sdl2 demo: Video", asset.width(), asset.height())
+            .window("Rust Video Player", window_width, window_height)
             .position_centered()
+            .allow_highdpi()
             .opengl()
             .build()
             .map_err(|e| e.to_string())
